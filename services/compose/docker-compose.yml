@@ -1,0 +1,217 @@
+# Compose file for Leasora local development stack.
+# Note: The top-level `version` key is deprecated in modern Docker Compose
+# and has been removed. Compose infers the schema automatically.
+#
+# Profiles:
+#   (default)       api + web — the lean stack for day-to-day dev.
+#                   Chroma runs embedded in the API process and persists
+#                   under the shared data bind mount.
+#   observability   the self-hosted Langfuse v3 stack (Postgres, ClickHouse,
+#                   Redis, MinIO, worker, web). Opt-in because it's heavy:
+#                       docker compose --profile observability up
+
+services:
+  # Langfuse v3 - self-hosted LLM observability (traces, prompt registry, scores)
+  # v3 is OpenTelemetry-native and required by langfuse-python SDK v3+/v4+
+  # (the SDK sends traces to the /api/public/otel/v1/traces endpoint, which
+  # only exists on Langfuse server >= 3.63). Unlike v2, v3 needs Postgres
+  # (relational data) + ClickHouse (analytics/trace storage) + Redis (job
+  # queue) + S3-compatible storage (MinIO locally) — mirrors Langfuse's own
+  # reference compose: https://github.com/langfuse/langfuse
+  langfuse-db:
+    image: postgres:17-alpine
+    container_name: leasora-langfuse-db
+    profiles: ["observability"]
+    environment:
+      - POSTGRES_USER=langfuse
+      - POSTGRES_PASSWORD=${LANGFUSE_DB_PASSWORD:-langfuse}
+      - POSTGRES_DB=langfuse
+    volumes:
+      - langfuse_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - leasora
+
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server
+    container_name: leasora-langfuse-clickhouse
+    profiles: ["observability"]
+    user: "101:101"
+    environment:
+      - CLICKHOUSE_DB=default
+      - CLICKHOUSE_USER=clickhouse
+      - CLICKHOUSE_PASSWORD=${LANGFUSE_CLICKHOUSE_PASSWORD:-clickhouse}
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+      - langfuse_clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 1s
+    networks:
+      - leasora
+
+  langfuse-minio:
+    image: minio/minio:latest
+    container_name: leasora-langfuse-minio
+    profiles: ["observability"]
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      - MINIO_ROOT_USER=minio
+      - MINIO_ROOT_PASSWORD=${LANGFUSE_MINIO_ROOT_PASSWORD:-miniosecret}
+    volumes:
+      - langfuse_minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 1s
+    networks:
+      - leasora
+
+  langfuse-redis:
+    image: redis:7-alpine
+    container_name: leasora-langfuse-redis
+    profiles: ["observability"]
+    command: >
+      --requirepass ${LANGFUSE_REDIS_AUTH:-myredissecret}
+      --maxmemory-policy noeviction
+    volumes:
+      - langfuse_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 10s
+      retries: 10
+    networks:
+      - leasora
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    container_name: leasora-langfuse-worker
+    profiles: ["observability"]
+    depends_on: &langfuse-depends-on
+      langfuse-db:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-minio:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+    environment: &langfuse-env
+      DATABASE_URL: postgresql://langfuse:${LANGFUSE_DB_PASSWORD:-langfuse}@langfuse-db:5432/langfuse
+      SALT: "${LANGFUSE_SALT:?LANGFUSE_SALT is required - generate with: openssl rand -hex 32}"
+      ENCRYPTION_KEY: "${LANGFUSE_ENCRYPTION_KEY:?LANGFUSE_ENCRYPTION_KEY is required - generate a 64-char hex string with: openssl rand -hex 32}"
+      TELEMETRY_ENABLED: "false"
+      NEXTAUTH_URL: http://localhost:3001
+      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-clickhouse}
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_ROOT_PASSWORD:-miniosecret}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_ROOT_PASSWORD:-miniosecret}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+      REDIS_HOST: langfuse-redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: ${LANGFUSE_REDIS_AUTH:-myredissecret}
+    networks:
+      - leasora
+
+  langfuse:
+    image: langfuse/langfuse:3
+    container_name: leasora-langfuse
+    profiles: ["observability"]
+    ports:
+      - "3001:3000"
+    depends_on: *langfuse-depends-on
+    environment:
+      <<: *langfuse-env
+      NEXTAUTH_SECRET: "${LANGFUSE_NEXTAUTH_SECRET:?LANGFUSE_NEXTAUTH_SECRET is required - generate with: openssl rand -hex 32}"
+    networks:
+      - leasora
+
+  # FastAPI Backend
+  api:
+    build:
+      # ``context: ../..`` so the Dockerfile can COPY pyproject.toml +
+      # uv.lock from the workspace root, plus ``apps/api/src`` for the
+      # actual Python source.
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    container_name: leasora-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../../data:/app/data
+      - ../../apps/api/src:/app/apps/api/src
+    environment:
+      - LEASORA_GROQ_API_KEY=${LEASORA_GROQ_API_KEY:-}
+      - LEASORA_GROQ_MODEL=llama-3.3-70b-versatile
+      - LEASORA_LANGFUSE_ENABLED=${LEASORA_LANGFUSE_ENABLED:-false}
+      - LEASORA_LANGFUSE_PUBLIC_KEY=${LEASORA_LANGFUSE_PUBLIC_KEY:-}
+      - LEASORA_LANGFUSE_SECRET_KEY=${LEASORA_LANGFUSE_SECRET_KEY:-}
+      - LEASORA_LANGFUSE_HOST=${LEASORA_LANGFUSE_HOST:-}
+      - LEASORA_UPLOAD_RETENTION_DAYS=${LEASORA_UPLOAD_RETENTION_DAYS:-30}
+      - LEASORA_PROMPT_INJECTION_DEFENSE_ENABLED=true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - leasora
+
+  # Next.js Frontend
+  web:
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+      args:
+        - NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+    container_name: leasora-web
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+      - NODE_ENV=production
+    depends_on:
+      - api
+    networks:
+      - leasora
+
+volumes:
+  langfuse_db_data:
+    driver: local
+  langfuse_clickhouse_data:
+    driver: local
+  langfuse_clickhouse_logs:
+    driver: local
+  langfuse_minio_data:
+    driver: local
+  langfuse_redis_data:
+    driver: local
+
+networks:
+  leasora:
+    driver: bridge

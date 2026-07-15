@@ -1,0 +1,94 @@
+name: Nightly Evals
+
+on:
+  # Nightly eval run to avoid charging PR-time budgets
+  schedule:
+    # 02:00 UTC nightly; deliberately off-peak so we don't compete
+    # with working-hours CI runners for the GitHub-hosted budget.
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    # Allow a manual trigger from the Actions UI for one-off catches
+    # (e.g. after a model rollout) without waiting for the cron.
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  # issues: write allows the failure-tracking step (see "Open tracking
+  # issue on failure" below) to call github.rest.issues.create without
+  # failing on a 403 from the GitHub API.
+  issues: write
+
+concurrency:
+  group: nightly-evals
+  cancel-in-progress: false
+
+jobs:
+  nightly-evals:
+    name: Run eval-marked tests
+    runs-on: ubuntu-latest
+    # NOTE: this secret is passed in via ``secrets.LEASORA_GROQ_API_KEY``
+    # below. The nightly run deliberately does NOT depend on or
+    # block any other workflow; it only opens an issue on failure.
+    env:
+      LEASORA_GROQ_API_KEY: ${{ secrets.LEASORA_GROQ_API_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: pip install uv
+      - name: Sync Python dependencies
+        run: uv sync --package leasora-api --all-extras
+      - name: Run eval-marked suite
+        # Same command CI uses (see ``.github/workflows/ci.yml``'s
+        # ``evals`` job) so a nightly failure and a PR-time failure
+        # exercise the same code path. ``--tb=short`` keeps the
+        # failure log readable inside an issue.
+        run: uv run pytest -m eval -v --tb=short apps/api/tests/evals/
+        env:
+          LEASORA_GROQ_API_KEY: ${{ secrets.LEASORA_GROQ_API_KEY }}
+      - name: Upload eval results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-eval-results
+          path: apps/api/tests/evals/eval_results/
+      - name: Open tracking issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          # Pass the run identifiers through step-level env so the
+          # script reads them from process.env instead of inlining them
+          # into the JS source. This keeps the secret values out of the
+          # script body and matches the workflow docs' recommended
+          # pattern for github-script.
+          env:
+            LEASORA_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            LEASORA_COMMIT_SHA: ${{ github.sha }}
+            LEASORA_REF_NAME: ${{ github.ref_name }}
+          script: |
+            const runUrl = process.env.LEASORA_RUN_URL;
+            const commitSha = process.env.LEASORA_COMMIT_SHA;
+            const refName = process.env.LEASORA_REF_NAME;
+            const body = [
+              'Nightly eval suite failed.',
+              '',
+              '* Run: <' + runUrl + '|view logs>',
+              '* Commit: `' + commitSha + '`',
+              '* Branch: `' + refName + '`',
+              '',
+              'Compare against the same suite in [ci.yml](.github/workflows/ci.yml) ' +
+              'which gates PRs. A nightly-only failure suggests model drift or ' +
+              'rate-limit pressure; investigate before landing model/prompt changes.',
+            ].join('\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'Nightly eval suite failed (' + new Date().toISOString().slice(0, 10) + ')',
+              body,
+              labels: ['evals', 'tracking-issue'],
+            });

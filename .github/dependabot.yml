@@ -1,0 +1,72 @@
+# Dependabot configuration.
+# Tracked ecosystems:
+# - uv (uv workspace at repo root: apps/api + packages/shared-schemas,
+#   backed by the single root uv.lock): weekly; groups minor + patch
+#   into a single PR so noise stays low.
+# - github-actions (CI runners): weekly.
+# - npm/pnpm (workspace frontend + tooling): weekly; groups minor +
+#   patch into a single PR.
+#
+# Per-ecosystem options:
+# - We allow up to 10 open PRs total (multiple ecosystem groups) so
+#   a burst of outdated deps doesn't immediately get capped.
+# - ``labels`` makes them easy to filter in the PR queue.
+# - ``groups`` collapse noisy patch updates into a single weekly digest
+#   PR so reviewers aren't triaged out of the inbox.
+#
+# Per-ecosystem options:
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "backend"
+    groups:
+      python-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+      python-major:
+        applies-to: version-updates
+        update-types:
+          - "major"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "frontend"
+    groups:
+      npm-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+      npm-major:
+        applies-to: version-updates
+        update-types:
+          - "major"
+    ignore:
+      # Pnpm workspaces frequently publish prerelease versions of the
+      # lockfile manager that break our CI; pin to stable majors only.
+      - dependency-name: "pnpm"
+        update-types: ["version-update:semver-major"]

@@ -1,0 +1,27 @@
+# Development docker-compose with hot-reload
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  api:
+    # Override: Use uvicorn dev server instead of production
+    command: uvicorn leasora_api.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      # Hot-reload on source changes. Path aligns with the Dockerfile layout
+      # (/app/apps/api/src), not the old ``/app/src``
+      - ../../apps/api/src:/app/apps/api/src
+      - ../../data:/app/data
+
+  web:
+    # Override: Use Next.js dev server
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+      target: development
+    command: pnpm dev
+    volumes:
+      - ../../apps/web/src:/app/apps/web/src
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+    ports:
+      - "3000:3000"

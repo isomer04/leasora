@@ -1,0 +1,167 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-push-backend:
+    name: Build & Push Backend Docker Image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      
+      - name: Extract version
+        id: meta
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "VERSION=${VERSION}"
+      
+      - name: Build Docker image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          push: false
+          tags: |
+            leasora-api:${{ steps.meta.outputs.version }}
+            leasora-api:latest
+          outputs: type=docker,dest=/tmp/image.tar
+      
+      - name: Load and test image
+        run: |
+          docker load --input /tmp/image.tar
+          docker run --rm -d --name test-api -p 8000:8000 \
+            -e LEASORA_GROQ_API_KEY=test-key \
+            leasora-api:latest
+          sleep 2
+          curl -f http://localhost:8000/health || exit 1
+          docker stop test-api
+
+      - name: Login to Docker Hub
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      - name: Push to Docker Hub
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_HUB_USERNAME }}/leasora-api:${{ steps.meta.outputs.version }}
+            ${{ secrets.DOCKER_HUB_USERNAME }}/leasora-api:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-and-push-frontend:
+    name: Build & Push Frontend Docker Image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      
+      - name: Extract version
+        id: meta
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+      
+      - name: Build Docker image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: false
+          tags: |
+            leasora-web:${{ steps.meta.outputs.version }}
+            leasora-web:latest
+          build-args: |
+            NEXT_PUBLIC_API_BASE_URL=https://api.leasora.app
+          outputs: type=docker,dest=/tmp/web-image.tar
+      
+      - name: Load and test image
+        run: |
+          docker load --input /tmp/web-image.tar
+          docker run --rm -d --name test-web -p 3000:3000 leasora-web:latest
+          sleep 3
+          curl -f http://localhost:3000 || exit 1
+          docker stop test-web
+
+      - name: Login to Docker Hub
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      - name: Push to Docker Hub
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_HUB_USERNAME }}/leasora-web:${{ steps.meta.outputs.version }}
+            ${{ secrets.DOCKER_HUB_USERNAME }}/leasora-web:latest
+          build-args: |
+            NEXT_PUBLIC_API_BASE_URL=https://api.leasora.app
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  create-github-release:
+    name: Create GitHub Release
+    needs: [build-and-push-backend, build-and-push-frontend]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          body: |
+            ## Docker Images
+            
+            ### Backend
+            ```
+            docker pull ${{ secrets.DOCKER_HUB_USERNAME }}/leasora-api:${{ github.ref_name }}
+            docker run -e LEASORA_GROQ_API_KEY=xxx ${{ secrets.DOCKER_HUB_USERNAME }}/leasora-api:${{ github.ref_name }}
+            ```
+            
+            ### Frontend
+            ```
+            docker pull ${{ secrets.DOCKER_HUB_USERNAME }}/leasora-web:${{ github.ref_name }}
+            docker run -p 3000:3000 ${{ secrets.DOCKER_HUB_USERNAME }}/leasora-web:${{ github.ref_name }}
+            ```
+            
+            ## Docker Compose
+            ```bash
+            docker-compose -f services/compose/docker-compose.yml up
+            ```
+          draft: false
+          prerelease: false

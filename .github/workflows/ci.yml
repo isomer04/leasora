@@ -1,0 +1,339 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    name: Install & Setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@v2
+      - name: Cache node modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+      - run: pnpm install --frozen-lockfile
+
+  lint:
+    name: Lint
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: pnpm/action-setup@v2
+      - name: Install uv
+        run: pip install uv
+      - name: Sync Python dependencies with dev extras
+        run: uv sync --package leasora-api --all-extras
+      - uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      # Prompt-format consistency gate: reject fenced JSON examples in prompts directory.
+      - name: Prompt format convention check
+        run: python scripts/check_prompts.py
+      # Guard against reintroduction of deleted documentation
+      - name: Forbid docs/CLEAN_CODE_GUIDE.md reintroduction
+        run: python scripts/check_no_clean_code_guide.py
+
+  import-contracts:
+    name: Import Contracts (grimp)
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install uv
+        run: pip install uv
+      - name: Sync Python dependencies with dev extras
+        run: uv sync --all-extras
+      - name: Check architectural import contracts
+        run: uv run --with grimp --with pyyaml python scripts/check_imports.py
+
+  type-check:
+    name: Type Check
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: pnpm/action-setup@v2
+      - name: Install uv
+        run: pip install uv
+      - name: Sync Python dependencies with dev extras
+        run: uv sync --package leasora-api --all-extras
+      - uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm type-check
+
+  gen-types:
+    name: Generate & Validate Types
+    needs: install
+    runs-on: ubuntu-latest
+    env:
+      LEASORA_GROQ_API_KEY: "gsk_dummy_key_for_ci_startup"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: pnpm/action-setup@v2
+      
+      - name: Install uv
+        run: pip install uv
+      
+      - name: Setup API dependencies
+        run: |
+          cd apps/api
+          uv sync --all-extras
+
+      - name: Start API server
+        run: |
+          cd apps/api
+          uv run uvicorn leasora_api.main:app --host 0.0.0.0 --port 8000 &
+          echo $! > api_pid.txt
+          
+      - name: Wait for API to be ready
+        run: |
+          for i in {1..30}; do
+            if curl -f http://localhost:8000/health > /dev/null 2>&1; then
+              echo "API is ready"
+              exit 0
+            fi
+            echo "Waiting for API... ($i/30)"
+            sleep 2
+          done
+          echo "API failed to start"
+          exit 1
+
+      # Smoke-check the ops endpoints so regressions are caught at PR time.
+      - name: Smoke-check /healthz
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/healthz)
+          if [ "$code" != "200" ]; then
+            echo "FAIL: /healthz returned $code"
+            exit 1
+          fi
+          echo "OK: /healthz returned $code"
+
+      - name: Smoke-check /readyz
+        run: |
+          # /readyz may legitimately return 503 (Chroma not warmed). Don't
+          # fail the build on that — just confirm we got *any* HTTP response.
+          code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/readyz)
+          if [ "$code" != "200" ] && [ "$code" != "503" ]; then
+            echo "FAIL: /readyz returned $code"
+            exit 1
+          fi
+          echo "OK: /readyz returned $code"
+
+      - name: Smoke-check /metrics
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/metrics)
+          if [ "$code" != "200" ]; then
+            echo "FAIL: /metrics returned $code"
+            exit 1
+          fi
+          echo "OK: /metrics returned $code"
+
+      - name: Install Node dependencies
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+      - run: pnpm install --frozen-lockfile
+
+      - name: Generate types
+        run: pnpm gen:types
+
+      - name: Stop API server
+        if: always()
+        run: |
+          if [ -f apps/api/api_pid.txt ]; then
+            kill $(cat apps/api/api_pid.txt) || true
+          fi
+
+      - name: Check for uncommitted type changes
+        run: |
+          if git diff --quiet packages/shared-types/src/api.ts; then
+            echo "✅ Types are in sync"
+          else
+            echo "❌ Generated types differ from committed types"
+            git diff packages/shared-types/src/api.ts
+            exit 1
+          fi
+
+  build:
+    name: Build Applications
+    needs: [lint, type-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: pnpm/action-setup@v2
+      - name: Install uv
+        run: pip install uv
+      - uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+  test:
+    name: Run Tests
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: pnpm/action-setup@v2
+      - run: pip install uv
+      - run: uv sync --package leasora-api --all-extras
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+
+  typecheck-tests:
+    # Dedicated CI job that type-checks the tests tree at *relaxed* strictness.
+    # The pre-commit hook only covers the production source under apps/api/src at --strict.
+    # ~226 mypy errors at --strict (mostly missing return annotations on
+    # fixtures / parametrize blocks) and would block every PR. Future work
+    # will incrementally ramp strictness on this job until it matches the
+    # production source strictness.
+    name: Type-check Tests (relaxed)
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: pip install uv
+      - run: uv sync --package leasora-api --all-extras
+      - name: mypy on apps/api/tests (relaxed strictness)
+        # Tests are type-checked at relaxed strictness while the production
+        # source is checked at full --strict mode.
+        run: uv run mypy --no-incremental --ignore-missing-imports apps/api/tests
+
+  evals:
+    # The LLM-judged eval suite runs after unit tests pass. This job requires
+    # real credentials and is only run on trusted PRs (same-repo branches).
+    # Forked-repo PRs skip this job to avoid wasting credits.
+    name: RAG Evals (Ragas + DeepEval)
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check for LEASORA_GROQ_API_KEY secret
+        id: secret-check
+        run: |
+          if [ -n "${{ secrets.LEASORA_GROQ_API_KEY }}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::LEASORA_GROQ_API_KEY secret is not available in this context (fork/Dependabot PR). Skipping the billed LLM-as-judge eval suite; a maintainer must re-run this job with secrets after review."
+          fi
+      - uses: actions/setup-python@v6
+        if: steps.secret-check.outputs.available == 'true'
+        with:
+          python-version: '3.12'
+      - run: pip install uv
+        if: steps.secret-check.outputs.available == 'true'
+      - run: uv sync --package leasora-api --all-extras
+        if: steps.secret-check.outputs.available == 'true'
+      # Run all eval-marked tests in one pytest invocation. ``-m eval``
+      # selects every test tagged ``@pytest.mark.eval`` (LLM-as-judge),
+      # including the privacy auditor and the prompt-regression floor.
+      # The hard floors (MIN_REFUSAL_ACCURACY etc.) live inside individual
+      # test files, so this command fails the build when any of them
+      # regress below the documented baseline.
+      - name: Run eval-marked suite (requires secrets.LEASORA_GROQ_API_KEY)
+        if: steps.secret-check.outputs.available == 'true'
+        run: uv run pytest -m eval -v --tb=short apps/api/tests/evals/
+        env:
+          LEASORA_GROQ_API_KEY: ${{ secrets.LEASORA_GROQ_API_KEY }}
+      - name: Upload eval results
+        if: always() && steps.secret-check.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: apps/api/tests/evals/eval_results/
+
+  pii-scan:
+    name: PII Safety Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: pip install uv
+      - run: uv sync --package leasora-api --all-extras
+      - run: uv run pytest apps/api/tests/evals/test_pii_safety.py -v --no-cov
+
+

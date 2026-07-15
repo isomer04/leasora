@@ -1,0 +1,47 @@
+{
+  "retrieval": {
+    "mrr": 0.6739130434782609,
+    "recall_at_k": 0.782608695652174,
+    "precision_at_k": 0.1565217391304348,
+    "refusal_accuracy": 0.9130434782608695,
+    "num_questions": 23,
+    "per_category": {
+      "factual": {
+        "mrr": 0.85,
+        "recall_at_k": 1.0,
+        "precision_at_k": 0.2,
+        "refusal_accuracy": 1.0,
+        "num_questions": 10
+      },
+      "statute": {
+        "mrr": 0.8,
+        "recall_at_k": 1.0,
+        "precision_at_k": 0.2,
+        "refusal_accuracy": 1.0,
+        "num_questions": 5
+      },
+      "red_flag": {
+        "mrr": 0.75,
+        "recall_at_k": 0.75,
+        "precision_at_k": 0.15000000000000002,
+        "refusal_accuracy": 1.0,
+        "num_questions": 4
+      },
+      "out_of_scope": {
+        "mrr": 0.0,
+        "recall_at_k": 0.0,
+        "precision_at_k": 0.0,
+        "refusal_accuracy": 0.5,
+        "num_questions": 4
+      }
+    }
+  },
+  "timestamp": "2026-07-10T14:07:39.418664+00:00",
+  "answer_quality": {
+    "answer_quality": 0.9719298245614035,
+    "faithfulness": 1.0,
+    "correctness": 0.9473684210526315,
+    "relevance": 0.968421052631579,
+    "num_questions": 19
+  }
+}

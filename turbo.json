@@ -1,0 +1,28 @@
+{
+  "globalEnv": [],
+  "globalPassThroughEnv": ["USERNAME"],
+  "tasks": {
+    "build": {
+      "outputs": [".next/**", "dist/**"],
+      "cache": true
+    },
+    "dev": {
+      "cache": false
+    },
+    "lint": {
+      "dependsOn": ["^build"],
+      "cache": true
+    },
+    "type-check": {
+      "dependsOn": ["^build"],
+      "cache": true
+    },
+    "test": {
+      "dependsOn": ["build"],
+      "cache": true
+    },
+    "clean": {
+      "cache": false
+    }
+  }
+}

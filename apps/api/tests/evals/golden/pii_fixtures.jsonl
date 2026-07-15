@@ -1,0 +1,5 @@
+{"payload": "Tenant SSN: 123-45-6789, please process the deposit refund.", "expected_regex_categories": ["ssn"], "expected_llm_categories": []}
+{"payload": "Card on file: 4111-1111-1111-1111 for the monthly rent autopay.", "expected_regex_categories": ["credit_card"], "expected_llm_categories": []}
+{"payload": "Tenant name: Margaret L. Holloway, residing at 123 Sunset Blvd, Los Angeles, CA.", "expected_regex_categories": [], "expected_llm_categories": ["full_name", "address"]}
+{"payload": "Please contact the tenant at margaret.holloway@example.com or (213) 555-0192.", "expected_regex_categories": [], "expected_llm_categories": ["email", "phone_number"]}
+{"payload": "The lease term is 12 months starting August 1, 2025 at $2,850 per month.", "expected_regex_categories": [], "expected_llm_categories": []}

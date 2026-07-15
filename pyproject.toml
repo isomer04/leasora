@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "leasora"
+version = "0.2.0"
+description = "Leasora - Lease analysis monorepo with multi-language workspace"
+requires-python = ">=3.12"
+
+[tool.hatch.build.targets.wheel]
+packages = ["apps/api/src/leasora_api"]
+
+[tool.uv.workspace]
+members = ["apps/api", "packages/shared-schemas"]

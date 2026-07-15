@@ -1,0 +1,7 @@
+{
+  "name": "@leasora/shared-types",
+  "version": "0.2.0",
+  "private": true,
+  "main": "./src/api.ts",
+  "files": ["src/"]
+}

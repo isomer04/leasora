@@ -1,0 +1,24 @@
+package: "leasora_api"
+
+modules:
+  - name: "http"
+    path: "apps/api/src/leasora_api/http"
+  - name: "services"
+    path: "apps/api/src/leasora_api/services"
+  - name: "core"
+    path: "apps/api/src/leasora_api/core"
+
+forbidden_imports:
+  # Services (business layer) must not depend on the HTTP/presentation layer.
+  - source: "services"
+    target: "http"
+    error: "Services must not import from the HTTP/presentation layer"
+
+  # Core (infrastructure layer) is the innermost layer and must not depend outward.
+  - source: "core"
+    target: "http"
+    error: "Core must not import from the HTTP/presentation layer"
+
+  - source: "core"
+    target: "services"
+    error: "Core must not import from the services/business layer"

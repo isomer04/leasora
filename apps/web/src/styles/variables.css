@@ -1,0 +1,29 @@
+/*
+ * Only theme-dependent (light/dark) surface/border/ink tokens live here.
+ * Brand/accent/semantic colors, radius, and spacing are defined directly
+ * as literals in tailwind.config.ts.
+ */
+:root {
+  /* Light mode surfaces (default/root) */
+  --color-bg-base: #f8f9fb;
+  --color-bg-surface: #ffffff;
+  --color-bg-elevated: #ffffff;
+  --color-bg-overlay: #f1f2f6;
+  --color-border-subtle: #e4e6ee;
+  --color-border-strong: #cbd0dd;
+  --color-text-primary: #12131a;
+  --color-text-secondary: #4b5164;
+  --color-text-muted: #7d8397;
+}
+
+.dark {
+  --color-bg-base: #08090d;
+  --color-bg-surface: #0f1116;
+  --color-bg-elevated: #161923;
+  --color-bg-overlay: #1d2130;
+  --color-border-subtle: #232838;
+  --color-border-strong: #323a50;
+  --color-text-primary: #f5f6f8;
+  --color-text-secondary: #a7adbe;
+  --color-text-muted: #6b7280;
+}
